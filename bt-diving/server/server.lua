@@ -1,31 +1,14 @@
-local ESX, QBCore
-
-if Config.Framework == "ESX" then
-    ESX = exports["es_extended"]:getSharedObject()
-elseif Config.Framework == "QB" then
-    QBCore = exports['qb-core']:GetCoreObject()
-end
-
--- Register the oxygen tank as a usable item so players can equip it from inventory
-if Config.Framework == "ESX" then
-    ESX.RegisterUsableItem(Config.ScubaGearItem, function(source)
-        TriggerClientEvent('diving:oxygenmask', source)
-    end)
-elseif Config.Framework == "QB" then
-    QBCore.Functions.CreateUseableItem(Config.ScubaGearItem, function(source)
-        TriggerClientEvent('diving:oxygenmask', source)
-    end)
-end
-
-local function getPlayer(source)
-    if Config.Framework == "ESX" then
-        return ESX.GetPlayerFromId(source)
-    elseif Config.Framework == "QB" then
-        return QBCore.Functions.GetPlayer(source)
+-- ox_inventory item-use export for the oxygen tank.
+-- The items.lua entry for 'oxygentank' points server.export = 'bt-diving.oxygentank'
+-- which calls this function when a player uses the item.
+exports('oxygentank', function(event, item, inventory, slot, data)
+    if event == 'usingItem' then
+        -- inventory.id is the player server id
+        TriggerClientEvent('diving:oxygenmask', inventory.id)
     end
-end
+end)
 
--- Weighted random item selection based on probability table
+-- Weighted random item selection based on probability table in config
 local function pickRandomItem()
     local roll = math.random()
     local cumulative = 0.0
@@ -38,7 +21,7 @@ local function pickRandomItem()
     return Config.Items[#Config.Items]
 end
 
--- Basic server-side sanity check: player must be in/near a configured diving zone
+-- Server-side sanity check: player must be within a configured diving zone
 local function isPlayerInDivingZone(source)
     local ped = GetPlayerPed(source)
     if not ped or ped == 0 then return false end
@@ -46,8 +29,7 @@ local function isPlayerInDivingZone(source)
     local coords = GetEntityCoords(ped)
 
     for _, zone in ipairs(Config.DivingZones) do
-        local zoneCoords = zone.coords
-        local dist = #(vector3(coords.x, coords.y, coords.z) - vector3(zoneCoords.x, zoneCoords.y, zoneCoords.z))
+        local dist = #(vector3(coords.x, coords.y, coords.z) - vector3(zone.coords.x, zone.coords.y, zone.coords.z))
         if dist <= zone.zoneRadius then
             return true
         end
@@ -55,7 +37,7 @@ local function isPlayerInDivingZone(source)
     return false
 end
 
--- Per-player rate limiting: prevent spamming giveItem
+-- Per-player rate limiting: prevent event spam
 local lastCollect = {}
 
 RegisterNetEvent('diving:giveItem')
@@ -63,7 +45,6 @@ AddEventHandler('diving:giveItem', function()
     local source = source
     local now = GetGameTimer()
 
-    -- Rate limit: at most once every 3 seconds per player
     if lastCollect[source] and (now - lastCollect[source]) < 3000 then
         return
     end
@@ -76,34 +57,14 @@ AddEventHandler('diving:giveItem', function()
     local item = pickRandomItem()
     local amount = math.random(item.min, item.max)
 
-    if Config.Framework == "ESX" then
-        local xPlayer = getPlayer(source)
-        if not xPlayer then return end
+    exports.ox_inventory:AddItem(source, item.name, amount)
 
-        xPlayer:addItem(item.name, amount)
-
-        if Config.ItemFoundNotify then
-            TriggerClientEvent('bt-diving:notify', source,
-                Config.Strings.noti_title2,
-                Config.Strings.item_found .. amount .. 'x ' .. item.name,
-                'success'
-            )
-        end
-
-    elseif Config.Framework == "QB" then
-        local Player = getPlayer(source)
-        if not Player then return end
-
-        Player.Functions.AddItem(item.name, amount)
-        TriggerClientEvent('inventory:client:ItemBox', source, QBCore.Shared.Items[item.name], "add", amount)
-
-        if Config.ItemFoundNotify then
-            TriggerClientEvent('bt-diving:notify', source,
-                Config.Strings.noti_title2,
-                Config.Strings.item_found .. amount .. 'x ' .. item.name,
-                'success'
-            )
-        end
+    if Config.ItemFoundNotify then
+        TriggerClientEvent('bt-diving:notify', source,
+            Config.Strings.noti_title2,
+            Config.Strings.item_found .. amount .. 'x ' .. item.name,
+            'success'
+        )
     end
 end)
 
@@ -111,30 +72,13 @@ RegisterNetEvent('diving:removeTank')
 AddEventHandler('diving:removeTank', function()
     local source = source
 
-    if Config.Framework == "ESX" then
-        local xPlayer = getPlayer(source)
-        if not xPlayer then return end
-
-        -- Only remove if the player actually has the item to prevent desync exploits
-        local item = xPlayer:getInventoryItem(Config.ScubaGearItem)
-        if item and item.count > 0 then
-            xPlayer:removeItem(Config.ScubaGearItem, 1)
-        end
-
-    elseif Config.Framework == "QB" then
-        local Player = getPlayer(source)
-        if not Player then return end
-
-        local item = Player.Functions.GetItemByName(Config.ScubaGearItem)
-        if item and item.amount > 0 then
-            Player.Functions.RemoveItem(Config.ScubaGearItem, 1)
-            TriggerClientEvent('inventory:client:ItemBox', source, QBCore.Shared.Items[Config.ScubaGearItem], "remove", 1)
-        end
+    -- Verify the player still has the item before removing to prevent desync exploits
+    local count = exports.ox_inventory:GetItemCount(source, Config.ScubaGearItem)
+    if count and count > 0 then
+        exports.ox_inventory:RemoveItem(source, Config.ScubaGearItem, 1)
     end
 end)
 
--- Clean up rate limit table when player drops to avoid memory leak
 AddEventHandler('playerDropped', function()
-    local source = source
     lastCollect[source] = nil
 end)
